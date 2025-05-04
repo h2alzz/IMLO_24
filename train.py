@@ -8,55 +8,94 @@ import torchvision.transforms as transforms
 from torch.utils.data import random_split, DataLoader
 import time
 import os
-
+import torch.nn.functional as F
 # ======================
 # Simplified CNN Model
 # ======================
+
 class MyCNN(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=10, dropout_rate=0.5):
         super(MyCNN, self).__init__()
         
-        # First convolutional block - reduced filters
+        # First convolutional block with slightly more filters
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
-        
-        # Second convolutional block - reduced filters
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),  # Added second conv layer
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2)
         )
         
-        # Third convolutional block - reduced filters
-        self.conv3 = nn.Sequential(
+        # Second convolutional block with more filters
+        self.conv2 = nn.Sequential(
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),  # Added second conv layer
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2)
         )
         
-        # Simplified fully connected layers
-        self.fc = nn.Sequential(
-            nn.Linear(128 * 4 * 4, 256),
-            nn.BatchNorm1d(256),
+        # Third convolutional block with more filters
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(256, 10)
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),  # Added second conv layer
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2)
         )
         
+        # Global Average Pooling for better feature extraction
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        # Improved fully connected layers with skip connection
+        self.fc1 = nn.Linear(256, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.fc2 = nn.Linear(512, 512)
+        self.bn2 = nn.BatchNorm1d(512)
+        self.dropout = nn.Dropout(dropout_rate)
+        self.fc3 = nn.Linear(512, num_classes)
+        
     def forward(self, x):
+        # Convolutional blocks
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
+        
+        # Global average pooling instead of flattening
+        x = self.global_pool(x)
         x = x.view(x.size(0), -1)  # Flatten
-        x = self.fc(x)
+        
+        # Fully connected layers with residual connection
+        identity = x
+        x = F.relu(self.bn1(self.fc1(x)))
+        x = self.dropout(x)
+        x = F.relu(self.bn2(self.fc2(x)))
+        x = self.dropout(x)
+        
+        # Final classification layer
+        x = self.fc3(x)
+        
         return x
 
+    def init_weights(self):
+        """Initialize model weights for better convergence"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
 # ======================
 # Training function
 # ======================
@@ -145,7 +184,9 @@ def main():
                            num_workers=2, pin_memory=True if torch.cuda.is_available() else False)
 
     # Initialize model
-    model = MyCNN().to(device)
+    # model = MyCNN().to(device)
+    model = MyCNN(num_classes=10, dropout_rate=0.5).to(device)
+    model.init_weights()
     
     # Use mixed precision training if available (for newer GPUs)
     scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
@@ -158,7 +199,7 @@ def main():
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
 
     # Reduce number of epochs
-    num_epochs = 60
+    num_epochs = 18
     best_val_acc = 0
     patience = 3
     counter = 0
